@@ -3,8 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import pytest
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.methods import AnswerCallbackQuery
 from starlette.testclient import TestClient
 
+from marketplacepilot.bot.router import _answer_callback
 from marketplacepilot.config import Settings
 from marketplacepilot.web import WEBHOOK_PATH, WebRuntime, create_app
 
@@ -74,6 +78,15 @@ def test_webhook_forwards_valid_update_to_dispatcher(tmp_path) -> None:
     assert dispatcher.updates[0][1].update_id == 7001
 
 
+@pytest.mark.asyncio
+async def test_expired_callback_answer_does_not_abort_interface_action() -> None:
+    callback = ExpiredCallback()
+
+    await _answer_callback(callback)  # type: ignore[arg-type]
+
+    assert callback.answer_attempts == 1
+
+
 def _make_client(tmp_path) -> tuple[TestClient, FakeBot, FakeDispatcher]:
     bot = FakeBot()
     dispatcher = FakeDispatcher()
@@ -102,3 +115,15 @@ def _update_payload() -> dict[str, object]:
             "text": "/start",
         },
     }
+
+
+@dataclass
+class ExpiredCallback:
+    answer_attempts: int = 0
+
+    async def answer(self, *_: object, **__: object) -> None:
+        self.answer_attempts += 1
+        raise TelegramBadRequest(
+            method=AnswerCallbackQuery(callback_query_id="expired"),
+            message="Bad Request: query is too old and response timeout expired or query ID is invalid",
+        )

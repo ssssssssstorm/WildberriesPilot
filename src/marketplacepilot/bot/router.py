@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -39,8 +40,8 @@ def build_router(workflow: WorkflowService) -> Router:
     @router.callback_query(F.data == "reset")
     async def reset(callback: CallbackQuery) -> None:
         await workflow.reset_demo(callback.from_user.id)
-        await callback.answer("Демо-сессия безопасно сброшена.")
-        await _show_shift(callback, workflow)
+        await _answer_callback(callback, "Демо-сессия безопасно сброшена.")
+        await _show_shift(callback, workflow, acknowledge=False)
 
     @router.callback_query(F.data.startswith("task:"))
     async def task_details(callback: CallbackQuery) -> None:
@@ -54,7 +55,7 @@ def build_router(workflow: WorkflowService) -> Router:
         task = await workflow.get_task(callback.from_user.id, _task_id(callback))
         await state.update_data(task_id=task.id)
         await state.set_state(DraftEdit.waiting_for_text)
-        await callback.answer()
+        await _answer_callback(callback)
         await _answer(callback, "Пришлите новый текст черновика одним сообщением. Он сохранится только в демо-сессии.")
 
     @router.message(DraftEdit.waiting_for_text, F.text)
@@ -107,31 +108,45 @@ async def _run_action(
     try:
         await action(callback.from_user.id, task_id)
     except (TaskNotFoundError, TransitionError) as error:
-        await callback.answer(str(error), show_alert=True)
+        await _answer_callback(callback, str(error), show_alert=True)
         return
-    await callback.answer(success_message)
-    await _show_task(callback, workflow, task_id)
+    await _answer_callback(callback, success_message)
+    await _show_task(callback, workflow, task_id, acknowledge=False)
 
 
-async def _show_shift(event: Message | CallbackQuery, workflow: WorkflowService) -> None:
+async def _show_shift(
+    event: Message | CallbackQuery,
+    workflow: WorkflowService,
+    *,
+    acknowledge: bool = True,
+) -> None:
     user_id = _user_id(event)
     summary = await workflow.get_summary(user_id)
+    if acknowledge and isinstance(event, CallbackQuery):
+        await _answer_callback(event)
     await _replace_or_answer(event, render_shift(summary), shift_keyboard())
 
 
 async def _show_queue(event: CallbackQuery, workflow: WorkflowService) -> None:
     tasks = await workflow.list_open_tasks(event.from_user.id)
-    await event.answer()
+    await _answer_callback(event)
     await _replace_or_answer(event, render_queue(tasks), queue_keyboard(tasks))
 
 
-async def _show_task(callback: CallbackQuery, workflow: WorkflowService, task_id: str) -> None:
+async def _show_task(
+    callback: CallbackQuery,
+    workflow: WorkflowService,
+    task_id: str,
+    *,
+    acknowledge: bool = True,
+) -> None:
     try:
         task = await workflow.get_task(callback.from_user.id, task_id)
     except TaskNotFoundError:
-        await callback.answer("Задача не найдена. Попробуйте сбросить демо.", show_alert=True)
+        await _answer_callback(callback, "Задача не найдена. Попробуйте сбросить демо.", show_alert=True)
         return
-    await callback.answer()
+    if acknowledge:
+        await _answer_callback(callback)
     await _replace_or_answer(callback, render_task(task), task_keyboard(task))
 
 
@@ -146,6 +161,15 @@ async def _replace_or_answer(event: Message | CallbackQuery, text: str, reply_ma
 async def _answer(callback: CallbackQuery, text: str) -> None:
     if callback.message:
         await callback.message.answer(text)
+
+
+async def _answer_callback(callback: CallbackQuery, text: str | None = None, *, show_alert: bool = False) -> None:
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except TelegramBadRequest as error:
+        message = error.message.lower()
+        if "query is too old" not in message and "query id is invalid" not in message:
+            raise
 
 
 def _task_id(callback: CallbackQuery) -> str:
