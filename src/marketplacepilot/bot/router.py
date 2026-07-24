@@ -40,7 +40,7 @@ def build_router(workflow: WorkflowService) -> Router:
     @router.callback_query(F.data == "reset")
     async def reset(callback: CallbackQuery) -> None:
         await workflow.reset_demo(callback.from_user.id)
-        await _answer_callback(callback, "Демо-сессия безопасно сброшена.")
+        await _answer_callback(callback, "Смена начата заново ✨")
         await _show_shift(callback, workflow, acknowledge=False)
 
     @router.callback_query(F.data.startswith("task:"))
@@ -56,7 +56,7 @@ def build_router(workflow: WorkflowService) -> Router:
         await state.update_data(task_id=task.id)
         await state.set_state(DraftEdit.waiting_for_text)
         await _answer_callback(callback)
-        await _answer(callback, "Пришлите новый текст черновика одним сообщением. Он сохранится только в демо-сессии.")
+        await _answer(callback, "✏️ Пришлите новый текст ответа одним сообщением.")
 
     @router.message(DraftEdit.waiting_for_text, F.text)
     async def save_draft(message: Message, state: FSMContext) -> None:
@@ -69,31 +69,31 @@ def build_router(workflow: WorkflowService) -> Router:
             return
         await state.clear()
         task = await workflow.get_task(message.from_user.id, task_id)
-        await message.answer("Черновик сохранён.\n\n" + render_task(task), reply_markup=task_keyboard(task))
+        await message.answer("✅ Текст сохранён.\n\n" + render_task(task), reply_markup=task_keyboard(task))
 
     @router.callback_query(F.data.startswith("send:"))
     async def send_response(callback: CallbackQuery) -> None:
-        await _run_action(callback, workflow, workflow.send_simulated_response, "Ответ отправлен в симуляции.")
+        await _run_action(callback, workflow, workflow.send_simulated_response, "Ответ подтверждён ✅")
 
     @router.callback_query(F.data.startswith("confirm:"))
     async def confirm_return(callback: CallbackQuery) -> None:
-        await _run_action(callback, workflow, workflow.confirm_return, "Возврат подтверждён человеком в симуляции.")
+        await _run_action(callback, workflow, workflow.confirm_return, "Возврат подтверждён человеком ✅")
 
     @router.callback_query(F.data.startswith("handoff:"))
     async def handoff(callback: CallbackQuery) -> None:
-        await _run_action(callback, workflow, workflow.handoff_to_human, "Задача передана человеку.")
+        await _run_action(callback, workflow, workflow.handoff_to_human, "Задача передана человеку 👤")
 
     @router.callback_query(F.data.startswith("defer:"))
     async def defer(callback: CallbackQuery) -> None:
-        await _run_action(callback, workflow, workflow.defer_task, "Задача отложена.")
+        await _run_action(callback, workflow, workflow.defer_task, "Задача отложена 🕓")
 
     @router.callback_query(F.data.startswith("close:"))
     async def close(callback: CallbackQuery) -> None:
-        await _run_action(callback, workflow, workflow.close_task, "Задача закрыта.")
+        await _run_action(callback, workflow, workflow.close_task, "Задача закрыта ✓")
 
     @router.message(F.text)
     async def fallback(message: Message) -> None:
-        await message.answer("Откройте рабочую смену командой /start.")
+        await message.answer("Откройте рабочую смену командой /start ✨")
 
     return router
 

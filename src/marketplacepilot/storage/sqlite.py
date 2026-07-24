@@ -201,14 +201,22 @@ class SqliteRepository:
             buyer_label=row["buyer_label"],
             subject=row["subject"],
             message=row["message"],
-            history=tuple(json.loads(row["history_json"])),
+            history=_json_text_tuple(row["history_json"]),
             scenario=row["scenario"],
             priority=Priority(row["priority"]),
             priority_reason=row["priority_reason"],
             draft=row["draft"],
             proposed_action=row["proposed_action"],
-            risks=tuple(json.loads(row["risks_json"])),
+            risks=_json_text_tuple(row["risks_json"]),
             needs_human=bool(row["needs_human"]),
             requires_confirmation=bool(row["requires_confirmation"]),
             return_confirmed=bool(row["return_confirmed"]),
         )
+
+
+def _json_text_tuple(raw_value: str) -> tuple[str, ...]:
+    """Accept data from current lists and legacy sessions that stored one text value."""
+    value = json.loads(raw_value)
+    if isinstance(value, str):
+        return (value,)
+    return tuple(str(item) for item in value)
