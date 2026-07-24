@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: marketplacepilot-demo
+    runtime: python
+    plan: free
+    buildCommand: python -m pip install -e .
+    startCommand: uvicorn marketplacepilot.web:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+      - key: WEBHOOK_BASE_URL
+        sync: false
