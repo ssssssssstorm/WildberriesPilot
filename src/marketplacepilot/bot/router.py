@@ -9,8 +9,27 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from marketplacepilot.bot.keyboards import about_keyboard, draft_keyboard, queue_keyboard, shift_keyboard, task_keyboard
-from marketplacepilot.bot.renderers import render_about, render_draft, render_queue, render_shift, render_task
+from marketplacepilot.bot.keyboards import (
+    about_keyboard,
+    draft_keyboard,
+    group_keyboard,
+    pause_keyboard,
+    task_actions_keyboard,
+    task_keyboard,
+    welcome_keyboard,
+    workspace_keyboard,
+)
+from marketplacepilot.bot.renderers import (
+    render_about,
+    render_draft,
+    render_group,
+    render_pause,
+    render_task,
+    render_task_actions,
+    render_welcome,
+    render_workspace,
+)
+from marketplacepilot.models import Task, TaskStatus
 from marketplacepilot.services.workflow import TransitionError, WorkflowService
 from marketplacepilot.storage.sqlite import TaskNotFoundError
 
@@ -25,39 +44,48 @@ def build_router(workflow: WorkflowService) -> Router:
     @router.message(CommandStart())
     async def start(message: Message) -> None:
         await workflow.ensure_session(message.from_user.id)
-        await _show_shift(message, workflow)
+        await _replace_or_answer(message, render_welcome(), welcome_keyboard())
 
-    @router.callback_query(F.data == "shift")
-    async def shift(callback: CallbackQuery) -> None:
+    @router.callback_query(F.data == "workspace")
+    async def workspace(callback: CallbackQuery) -> None:
         await workflow.ensure_session(callback.from_user.id)
-        await _show_shift(callback, workflow)
+        await _show_workspace(callback, workflow)
 
-    @router.callback_query(F.data == "queue")
-    async def queue(callback: CallbackQuery) -> None:
-        await workflow.ensure_session(callback.from_user.id)
-        await _show_queue(callback, workflow)
+    @router.callback_query(F.data == "pause")
+    async def pause(callback: CallbackQuery) -> None:
+        await _answer_callback(callback)
+        await _replace_or_answer(callback, render_pause(), pause_keyboard())
 
     @router.callback_query(F.data == "about")
     async def about(callback: CallbackQuery) -> None:
-        await workflow.ensure_session(callback.from_user.id)
-        await _show_about(callback, workflow)
+        await _answer_callback(callback)
+        await _replace_or_answer(callback, render_about(), about_keyboard())
 
     @router.callback_query(F.data == "reset")
     async def reset(callback: CallbackQuery) -> None:
         await workflow.reset_demo(callback.from_user.id)
-        await _answer_callback(callback, "Смена начата заново ✨")
-        await _show_shift(callback, workflow, acknowledge=False)
+        await _answer_callback(callback, "Рабочий день сброшен ↻")
+        await _replace_or_answer(callback, render_welcome(), welcome_keyboard())
+
+    @router.callback_query(F.data.startswith("group:"))
+    async def group(callback: CallbackQuery) -> None:
+        await workflow.ensure_session(callback.from_user.id)
+        await _show_group(callback, workflow, _group_name(callback))
 
     @router.callback_query(F.data.startswith("task:"))
     async def task_details(callback: CallbackQuery) -> None:
         await workflow.ensure_session(callback.from_user.id)
-        task_id = _task_id(callback)
-        await _show_task(callback, workflow, task_id)
+        await _show_task(callback, workflow, _task_id(callback))
 
     @router.callback_query(F.data.startswith("draft:"))
     async def draft_details(callback: CallbackQuery) -> None:
         await workflow.ensure_session(callback.from_user.id)
         await _show_draft(callback, workflow, _task_id(callback))
+
+    @router.callback_query(F.data.startswith("actions:"))
+    async def task_actions(callback: CallbackQuery) -> None:
+        await workflow.ensure_session(callback.from_user.id)
+        await _show_task_actions(callback, workflow, _task_id(callback))
 
     @router.callback_query(F.data.startswith("edit:"))
     async def request_draft_edit(callback: CallbackQuery, state: FSMContext) -> None:
@@ -66,7 +94,7 @@ def build_router(workflow: WorkflowService) -> Router:
         await state.update_data(task_id=task.id)
         await state.set_state(DraftEdit.waiting_for_text)
         await _answer_callback(callback)
-        await _answer(callback, "✏️ Пришлите новый текст ответа одним сообщением.\nЯ сохраню его в текущей сессии.")
+        await _answer(callback, "✏️ Пришлите новый текст ответа одним сообщением.")
 
     @router.message(DraftEdit.waiting_for_text, F.text)
     async def save_draft(message: Message, state: FSMContext) -> None:
@@ -83,15 +111,15 @@ def build_router(workflow: WorkflowService) -> Router:
 
     @router.callback_query(F.data.startswith("send:"))
     async def send_response(callback: CallbackQuery) -> None:
-        await _run_action(callback, workflow, workflow.send_simulated_response, "Ответ подтверждён ✅")
+        await _run_action(callback, workflow, workflow.send_simulated_response, "Решение подтверждено ✅")
 
     @router.callback_query(F.data.startswith("confirm:"))
     async def confirm_return(callback: CallbackQuery) -> None:
-        await _run_action(callback, workflow, workflow.confirm_return, "Возврат подтверждён человеком ✅")
+        await _run_action(callback, workflow, workflow.confirm_return, "Возврат подтверждён ✅")
 
     @router.callback_query(F.data.startswith("handoff:"))
     async def handoff(callback: CallbackQuery) -> None:
-        await _run_action(callback, workflow, workflow.handoff_to_human, "Задача передана человеку 👤")
+        await _run_action(callback, workflow, workflow.handoff_to_human, "Задача передана менеджеру 👤")
 
     @router.callback_query(F.data.startswith("defer:"))
     async def defer(callback: CallbackQuery) -> None:
@@ -103,9 +131,65 @@ def build_router(workflow: WorkflowService) -> Router:
 
     @router.message(F.text)
     async def fallback(message: Message) -> None:
-        await message.answer("Откройте рабочую смену командой /start ✨")
+        await message.answer("Чтобы начать рабочий день, отправьте /start 🤖")
 
     return router
+
+
+async def _show_workspace(callback: CallbackQuery, workflow: WorkflowService) -> None:
+    tasks = await workflow.list_tasks(callback.from_user.id)
+    agent_tasks, manager_tasks, decision_tasks = _split_tasks(tasks)
+    await _answer_callback(callback)
+    await _replace_or_answer(
+        callback,
+        render_workspace(len(agent_tasks), len(manager_tasks), len(decision_tasks)),
+        workspace_keyboard(),
+    )
+
+
+async def _show_group(callback: CallbackQuery, workflow: WorkflowService, group: str) -> None:
+    tasks = await workflow.list_tasks(callback.from_user.id)
+    agent_tasks, manager_tasks, decision_tasks = _split_tasks(tasks)
+    selected_tasks = {"agent": agent_tasks, "manager": manager_tasks, "decision": decision_tasks}[group]
+    await _answer_callback(callback)
+    await _replace_or_answer(callback, render_group(group, selected_tasks), group_keyboard(group, selected_tasks))
+
+
+async def _show_task(
+    callback: CallbackQuery,
+    workflow: WorkflowService,
+    task_id: str,
+    *,
+    acknowledge: bool = True,
+) -> None:
+    try:
+        task = await workflow.get_task(callback.from_user.id, task_id)
+    except TaskNotFoundError:
+        await _answer_callback(callback, "Задача не найдена. Начните рабочий день заново.", show_alert=True)
+        return
+    if acknowledge:
+        await _answer_callback(callback)
+    await _replace_or_answer(callback, render_task(task), task_keyboard(task))
+
+
+async def _show_draft(callback: CallbackQuery, workflow: WorkflowService, task_id: str) -> None:
+    try:
+        task = await workflow.get_task(callback.from_user.id, task_id)
+    except TaskNotFoundError:
+        await _answer_callback(callback, "Задача не найдена. Начните рабочий день заново.", show_alert=True)
+        return
+    await _answer_callback(callback)
+    await _replace_or_answer(callback, render_draft(task), draft_keyboard(task))
+
+
+async def _show_task_actions(callback: CallbackQuery, workflow: WorkflowService, task_id: str) -> None:
+    try:
+        task = await workflow.get_task(callback.from_user.id, task_id)
+    except TaskNotFoundError:
+        await _answer_callback(callback, "Задача не найдена. Начните рабочий день заново.", show_alert=True)
+        return
+    await _answer_callback(callback)
+    await _replace_or_answer(callback, render_task_actions(task), task_actions_keyboard(task))
 
 
 async def _run_action(
@@ -122,61 +206,6 @@ async def _run_action(
         return
     await _answer_callback(callback, success_message)
     await _show_task(callback, workflow, task_id, acknowledge=False)
-
-
-async def _show_shift(
-    event: Message | CallbackQuery,
-    workflow: WorkflowService,
-    *,
-    acknowledge: bool = True,
-) -> None:
-    user_id = _user_id(event)
-    summary = await workflow.get_summary(user_id)
-    tasks = await workflow.list_open_tasks(user_id)
-    focus_task = tasks[0] if tasks else None
-    if acknowledge and isinstance(event, CallbackQuery):
-        await _answer_callback(event)
-    await _replace_or_answer(event, render_shift(summary, focus_task), shift_keyboard(focus_task))
-
-
-async def _show_about(callback: CallbackQuery, workflow: WorkflowService) -> None:
-    tasks = await workflow.list_open_tasks(callback.from_user.id)
-    focus_task = tasks[0] if tasks else None
-    await _answer_callback(callback)
-    await _replace_or_answer(callback, render_about(), about_keyboard(focus_task))
-
-
-async def _show_queue(event: CallbackQuery, workflow: WorkflowService) -> None:
-    tasks = await workflow.list_open_tasks(event.from_user.id)
-    await _answer_callback(event)
-    await _replace_or_answer(event, render_queue(tasks), queue_keyboard(tasks))
-
-
-async def _show_task(
-    callback: CallbackQuery,
-    workflow: WorkflowService,
-    task_id: str,
-    *,
-    acknowledge: bool = True,
-) -> None:
-    try:
-        task = await workflow.get_task(callback.from_user.id, task_id)
-    except TaskNotFoundError:
-        await _answer_callback(callback, "Задача не найдена. Попробуйте сбросить демо.", show_alert=True)
-        return
-    if acknowledge:
-        await _answer_callback(callback)
-    await _replace_or_answer(callback, render_task(task), task_keyboard(task))
-
-
-async def _show_draft(callback: CallbackQuery, workflow: WorkflowService, task_id: str) -> None:
-    try:
-        task = await workflow.get_task(callback.from_user.id, task_id)
-    except TaskNotFoundError:
-        await _answer_callback(callback, "Задача не найдена. Откройте смену заново.", show_alert=True)
-        return
-    await _answer_callback(callback)
-    await _replace_or_answer(callback, render_draft(task), draft_keyboard(task))
 
 
 async def _replace_or_answer(event: Message | CallbackQuery, text: str, reply_markup: object) -> None:
@@ -210,13 +239,21 @@ async def _answer_callback(callback: CallbackQuery, text: str | None = None, *, 
             raise
 
 
+def _split_tasks(tasks: list[Task]) -> tuple[list[Task], list[Task], list[Task]]:
+    agent_tasks = [task for task in tasks if not task.needs_human and not task.requires_confirmation]
+    manager_tasks = [task for task in tasks if task.needs_human and not task.requires_confirmation]
+    decision_tasks = [task for task in tasks if task.requires_confirmation and task.status is not TaskStatus.COMPLETED]
+    return agent_tasks, manager_tasks, decision_tasks
+
+
 def _task_id(callback: CallbackQuery) -> str:
     if not callback.data or ":" not in callback.data:
         raise ValueError("Некорректное действие.")
     return callback.data.split(":", maxsplit=1)[1]
 
 
-def _user_id(event: Message | CallbackQuery) -> int:
-    if isinstance(event, CallbackQuery):
-        return event.from_user.id
-    return event.from_user.id
+def _group_name(callback: CallbackQuery) -> str:
+    group = _task_id(callback)
+    if group not in {"agent", "manager", "decision"}:
+        raise ValueError("Неизвестный раздел.")
+    return group

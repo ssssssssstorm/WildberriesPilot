@@ -44,6 +44,9 @@ class WorkflowService:
     async def list_open_tasks(self, user_id: int) -> list[Task]:
         return await self._repository.list_tasks(user_id, include_completed=False)
 
+    async def list_tasks(self, user_id: int) -> list[Task]:
+        return await self._repository.list_tasks(user_id)
+
     async def get_task(self, user_id: int, task_id: str) -> Task:
         return await self._repository.get_task(user_id, task_id)
 
